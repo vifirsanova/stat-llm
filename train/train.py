@@ -1,417 +1,254 @@
-from __future__ import annotations
-from typing import Dict, List, Tuple, Set, Optional, Union, Iterable, Callable, Any
-from collections import defaultdict, deque
-import heapq
 import math
-from dataclasses import dataclass, field
-from functools import total_ordering
+from collections import defaultdict
+from typing import Dict, List, Tuple, Set, Optional
+import random
 
 # Types
-Pair = Tuple[int, int]
-Word = List[int]
-AddedToken = Dict[str, Any]  # Simplified for translation
+Segment = str
+Segmentation = List[Segment]
+HyphenatedData = Dict[str, List[Segmentation]]  # word -> list of possible segmentations
 
-@dataclass
-class Merge:
-    pair: Pair
-    count: int
-    pos: Set[int]
-
-    def __lt__(self, other: Merge) -> bool:
-        if self.count != other.count:
-            return self.count < other.count
-        return self.pair > other.pair  # Reverse for ascending order
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Merge):
-            return NotImplemented
-        return self.count == other.count and self.pair == other.pair
-
-@dataclass
-class BpeTrainerConfig:
-    min_frequency: int = 0
-    vocab_size: int = 30000
-    show_progress: bool = True
-    special_tokens: List[AddedToken] = field(default_factory=list)
-    limit_alphabet: Optional[int] = None
-    initial_alphabet: Set[str] = field(default_factory=set)
-    continuing_subword_prefix: Optional[str] = None
-    end_of_word_suffix: Optional[str] = None
-    max_token_length: Optional[int] = None
-
-class BpeTrainerBuilder:
-    def __init__(self):
-        self.config = BpeTrainerConfig()
-
-    def min_frequency(self, frequency: int) -> BpeTrainerBuilder:
-        self.config.min_frequency = frequency
-        return self
-
-    def vocab_size(self, size: int) -> BpeTrainerBuilder:
-        self.config.vocab_size = size
-        return self
-
-    def show_progress(self, show: bool) -> BpeTrainerBuilder:
-        self.config.show_progress = show
-        return self
-
-    def special_tokens(self, tokens: List[AddedToken]) -> BpeTrainerBuilder:
-        self.config.special_tokens = tokens
-        return self
-
-    def limit_alphabet(self, limit: int) -> BpeTrainerBuilder:
-        self.config.limit_alphabet = limit
-        return self
-
-    def initial_alphabet(self, alphabet: Set[str]) -> BpeTrainerBuilder:
-        self.config.initial_alphabet = alphabet
-        return self
-
-    def continuing_subword_prefix(self, prefix: str) -> BpeTrainerBuilder:
-        self.config.continuing_subword_prefix = prefix
-        return self
-
-    def end_of_word_suffix(self, suffix: str) -> BpeTrainerBuilder:
-        self.config.end_of_word_suffix = suffix
-        return self
-
-    def max_token_length(self, max_token_length: Optional[int]) -> BpeTrainerBuilder:
-        self.config.max_token_length = max_token_length
-        return self
-
-    def build(self) -> BpeTrainer:
-        return BpeTrainer(
-            min_frequency=self.config.min_frequency,
-            vocab_size=self.config.vocab_size,
-            show_progress=self.config.show_progress,
-            special_tokens=self.config.special_tokens,
-            limit_alphabet=self.config.limit_alphabet,
-            initial_alphabet=self.config.initial_alphabet,
-            continuing_subword_prefix=self.config.continuing_subword_prefix,
-            end_of_word_suffix=self.config.end_of_word_suffix,
-            max_token_length=self.config.max_token_length,
-        )
-
-class BpeTrainer:
+class EMSegmentationTrainer:
     def __init__(
         self,
-        min_frequency: int = 0,
-        vocab_size: int = 30000,
-        show_progress: bool = True,
-        special_tokens: Optional[List[AddedToken]] = None,
-        limit_alphabet: Optional[int] = None,
-        initial_alphabet: Optional[Set[str]] = None,
-        continuing_subword_prefix: Optional[str] = None,
-        end_of_word_suffix: Optional[str] = None,
-        max_token_length: Optional[int] = None,
+        max_iterations: int = 100,
+        convergence_threshold: float = 1e-5,
+        min_segment_count: int = 2,
+        smoothing_alpha: float = 0.1,
     ):
-        self.min_frequency = min_frequency
-        self.vocab_size = vocab_size
-        self.show_progress = show_progress
-        self.special_tokens = special_tokens or []
-        self.limit_alphabet = limit_alphabet
-        self.initial_alphabet = initial_alphabet or set()
-        self.continuing_subword_prefix = continuing_subword_prefix
-        self.end_of_word_suffix = end_of_word_suffix
-        self.max_token_length = max_token_length
-        self.words: Dict[str, int] = {}
+        self.max_iterations = max_iterations
+        self.convergence_threshold = convergence_threshold
+        self.min_segment_count = min_segment_count
+        self.smoothing_alpha = smoothing_alpha  # Additive smoothing parameter
+        self.segment_probs: Dict[Segment, float] = defaultdict(float)
+        self.transition_probs: Dict[Tuple[Segment, Segment], float] = defaultdict(float)
+        self.segment_counts: Dict[Segment, int] = defaultdict(int)
+        self.pair_counts: Dict[Tuple[Segment, Segment], int] = defaultdict(int)
 
-    @staticmethod
-    def builder() -> BpeTrainerBuilder:
-        return BpeTrainerBuilder()
-
-    def setup_progress(self) -> Optional[Any]:
-        # Placeholder for progress bar implementation
-        if self.show_progress:
-            print("[Progress bar would be shown]")
-            return object()  # Dummy object
-        return None
-
-    def finalize_progress(self, p: Optional[Any], final_len: int) -> None:
-        if p is not None:
-            print(f"\nProgress completed: {final_len} items processed")
-
-    def update_progress(self, p: Optional[Any], len: int, message: str) -> None:
-        if p is not None:
-            print(f"{message}: {len} items")
-
-    def add_special_tokens(
-        self, w2id: Dict[str, int], id2w: List[str]
-    ) -> None:
-        for token in self.special_tokens:
-            content = token["content"]
-            if content not in w2id:
-                id2w.append(content)
-                w2id[content] = len(id2w) - 1
-
-    def compute_alphabet(
-        self,
-        wc: Dict[str, int],
-        w2id: Dict[str, int],
-        id2w: List[str],
-    ) -> None:
-        alphabet: Dict[str, int] = defaultdict(int)
+    def initialize_probs(self, data: HyphenatedData):
+        """Initialize probabilities based on observed segmentations"""
+        # Count segments and segment pairs
+        for segmentations in data.values():
+            for seg in segmentations:
+                for i in range(len(seg)):
+                    self.segment_counts[seg[i]] += 1
+                    if i < len(seg) - 1:
+                        self.pair_counts[(seg[i], seg[i+1])] += 1
         
-        for word, count in wc.items():
-            for c in word:
-                alphabet[c] += count
+        # Initialize probabilities with add-α smoothing
+        total_segments = sum(self.segment_counts.values()) + self.smoothing_alpha * len(self.segment_counts)
+        for seg, count in self.segment_counts.items():
+            self.segment_probs[seg] = (count + self.smoothing_alpha) / total_segments
+        
+        # Initialize transition probabilities
+        for (s1, s2), count in self.pair_counts.items():
+            total_transitions = self.segment_counts[s1] + self.smoothing_alpha * len(self.segment_counts)
+            self.transition_probs[(s1, s2)] = (count + self.smoothing_alpha) / total_transitions
 
-        for c in self.initial_alphabet:
-            alphabet[c] = math.inf
-
-        kept = list(alphabet.items())
-
-        to_remove = 0
-        if self.limit_alphabet is not None and len(alphabet) > self.limit_alphabet:
-            to_remove = len(alphabet) - self.limit_alphabet
-
-        if to_remove > 0:
-            kept.sort(key=lambda x: x[1])
-            kept = kept[to_remove:]
-
-        kept.sort(key=lambda x: ord(x[0]))
-        for c, _ in kept:
-            s = c
-            if s not in w2id:
-                id2w.append(s)
-                w2id[s] = len(id2w) - 1
-
-    def tokenize_words(
-        self,
-        wc: Dict[str, int],
-        w2id: Dict[str, int],
-        id2w: List[str],
-        p: Optional[Any],
-    ) -> Tuple[List[Word], List[int]]:
-        words: List[Word] = []
-        counts: List[int] = []
-
-        for word, count in wc.items():
-            current_word: Word = []
-            counts.append(count)
-
-            chars = list(word)
-            for i, c in enumerate(chars):
-                is_first = i == 0
-                is_last = i == len(chars) - 1
-                s = c
+    def e_step(self, data: HyphenatedData) -> Dict[str, List[Tuple[Segmentation, float]]]:
+        """Compute expected counts for each possible segmentation"""
+        expected_counts = defaultdict(list)
+        
+        for word, segmentations in data.items():
+            total_prob = 0.0
+            seg_probs = []
+            
+            for seg in segmentations:
+                # Calculate probability of this segmentation
+                prob = 1.0
+                # Start with initial segment probability
+                if seg:
+                    prob *= self.segment_probs[seg[0]]
                 
-                if s in w2id:
-                    if not is_first and self.continuing_subword_prefix:
-                        s = f"{self.continuing_subword_prefix}{s}"
-                    if is_last and self.end_of_word_suffix:
-                        s = f"{s}{self.end_of_word_suffix}"
-                    
-                    if s not in w2id:
-                        id2w.append(s)
-                        w2id[s] = len(id2w) - 1
-                    
-                    current_word.append(w2id[s])
-            
-            words.append(current_word)
-            
-            if p is not None:
-                pass  # Update progress
-
-        return words, counts
-
-    def count_pairs(
-        self,
-        words: List[Word],
-        counts: List[int],
-        p: Optional[Any],
-    ) -> Tuple[Dict[Pair, int], Dict[Pair, Set[int]]]:
-        pair_counts: Dict[Pair, int] = defaultdict(int)
-        where_to_update: Dict[Pair, Set[int]] = defaultdict(set)
-
-        for i, word in enumerate(words):
-            for j in range(len(word) - 1):
-                cur_pair: Pair = (word[j], word[j + 1])
-                count = counts[i]
+                # Multiply by transition probabilities
+                for i in range(len(seg) - 1):
+                    prob *= self.transition_probs[(seg[i], seg[i+1])]
                 
-                where_to_update[cur_pair].add(i)
-                pair_counts[cur_pair] += count
-
-            if p is not None:
-                pass  # Update progress
-
-        return pair_counts, where_to_update
-
-    def do_train(
-        self,
-        word_counts: Dict[str, int],
-        model: "BPE",
-    ) -> List[AddedToken]:
-        word_to_id: Dict[str, int] = {}
-        id_to_word: List[str] = []
-        max_token_length = self.max_token_length or math.inf
-
-        progress = self.setup_progress()
-
-        # 1. Add special tokens
-        self.add_special_tokens(word_to_id, id_to_word)
-
-        # 2. Compute initial alphabet
-        self.compute_alphabet(word_counts, word_to_id, id_to_word)
-
-        # 3. Tokenize words
-        self.update_progress(progress, len(word_counts), "Tokenize words")
-        words, counts = self.tokenize_words(word_counts, word_to_id, id_to_word, progress)
-        self.finalize_progress(progress, len(words))
-
-        # 4. Count pairs
-        self.update_progress(progress, len(words), "Count pairs")
-        pair_counts, where_to_update = self.count_pairs(words, counts, progress)
-        
-        # Create priority queue
-        queue: List[Merge] = []
-        for pair, pos in where_to_update.items():
-            count = pair_counts[pair]
-            if count > 0:
-                heapq.heappush(queue, Merge(pair, count, pos))
-        self.finalize_progress(progress, len(words))
-
-        # 5. Do merges
-        self.update_progress(progress, self.vocab_size, "Compute merges")
-        merges: List[Tuple[Pair, int]] = []
-        
-        while len(word_to_id) < self.vocab_size and queue:
-            top = heapq.heappop(queue)
+                seg_probs.append(prob)
+                total_prob += prob
             
-            if top.count != pair_counts[top.pair]:
-                top.count = pair_counts[top.pair]
-                heapq.heappush(queue, top)
-                continue
+            # Normalize probabilities
+            if total_prob > 0:
+                normalized_probs = [p / total_prob for p in seg_probs]
+            else:
+                normalized_probs = [1.0 / len(segmentations)] * len(segmentations)
+            
+            expected_counts[word] = list(zip(segmentations, normalized_probs))
+        
+        return expected_counts
 
-            if top.count < 1 or self.min_frequency > top.count:
+    def m_step(self, expected_counts: Dict[str, List[Tuple[Segmentation, float]]]):
+        """Update probabilities based on expected counts"""
+        # Reset counts
+        new_segment_counts = defaultdict(float)
+        new_pair_counts = defaultdict(float)
+        
+        # Accumulate expected counts
+        for seg_probs in expected_counts.values():
+            for seg, prob in seg_probs:
+                for i in range(len(seg)):
+                    new_segment_counts[seg[i]] += prob
+                    if i < len(seg) - 1:
+                        new_pair_counts[(seg[i], seg[i+1])] += prob
+        
+        # Update segment probabilities
+        total_segments = sum(new_segment_counts.values()) + self.smoothing_alpha * len(new_segment_counts)
+        for seg in new_segment_counts:
+            self.segment_probs[seg] = (new_segment_counts[seg] + self.smoothing_alpha) / total_segments
+        
+        # Update transition probabilities
+        for (s1, s2) in new_pair_counts:
+            total_transitions = new_segment_counts[s1] + self.smoothing_alpha * len(new_segment_counts)
+            self.transition_probs[(s1, s2)] = (new_pair_counts[(s1, s2)] + self.smoothing_alpha) / total_transitions
+
+    def train(self, data: HyphenatedData):
+        """Train the model using EM algorithm"""
+        self.initialize_probs(data)
+        
+        prev_log_likelihood = -float('inf')
+        
+        for iteration in range(self.max_iterations):
+            # E-step
+            expected_counts = self.e_step(data)
+            
+            # M-step
+            self.m_step(expected_counts)
+            
+            # Compute log-likelihood to check convergence
+            log_likelihood = self.compute_log_likelihood(data)
+            
+            # Check for convergence
+            if iteration > 0 and abs(log_likelihood - prev_log_likelihood) < self.convergence_threshold:
+                print(f"Converged after {iteration} iterations")
                 break
-
-            part_a = id_to_word[top.pair[0]]
-            part_b = id_to_word[top.pair[1]]
-            
-            # Build new token
-            if self.continuing_subword_prefix and part_b.startswith(self.continuing_subword_prefix):
-                part_b = part_b[len(self.continuing_subword_prefix):]
-            
-            new_token = f"{part_a}{part_b}"
-            
-            # Insert new token if it doesn't exist
-            new_token_id = word_to_id.get(new_token, len(id_to_word))
-            if new_token not in word_to_id:
-                id_to_word.append(new_token)
-                word_to_id[new_token] = new_token_id
-            
-            merges.append((top.pair, new_token_id))
-
-            # Merge the new pair in every word
-            changes: List[Tuple[Pair, int]] = []
-            for i in top.pos:
-                word = words[i]
-                new_word = []
-                j = 0
-                while j < len(word):
-                    if j < len(word) - 1 and word[j] == top.pair[0] and word[j + 1] == top.pair[1]:
-                        new_word.append(new_token_id)
-                        j += 2
-                        
-                        # Check for new pairs created by this merge
-                        if len(new_word) > 1:
-                            left_pair = (new_word[-2], new_word[-1])
-                            changes.append((left_pair, 1))
-                        
-                        if j < len(word):
-                            right_pair = (new_token_id, word[j])
-                            changes.append((right_pair, 1))
-                    else:
-                        new_word.append(word[j])
-                        j += 1
                 
-                words[i] = new_word
-
-            # Update pair counts with changes
-            for (pair, change) in changes:
-                pair_counts[pair] += change * counts[i]
-                where_to_update[pair].add(i)
-
-            # Update queue with new/changed pairs
-            for pair in where_to_update:
-                count = pair_counts[pair]
-                if count > 0:
-                    heapq.heappush(queue, Merge(pair, count, where_to_update[pair]))
-
-            if progress is not None:
-                pass  # Update progress
-
-        self.finalize_progress(progress, len(merges))
-
-        # Update model with results
-        model.vocab = word_to_id
-        model.vocab_r = {v: k for k, v in word_to_id.items()}
-        model.merges = {
-            pair: (i, new_id) for i, (pair, new_id) in enumerate(merges)
-        }
-        model.continuing_subword_prefix = self.continuing_subword_prefix
-        model.end_of_word_suffix = self.end_of_word_suffix
-
-        return self.special_tokens.copy()
-
-    def train(self, model: "BPE") -> List[AddedToken]:
-        return self.do_train(self.words, model)
-
-    def should_show_progress(self) -> bool:
-        return self.show_progress
-
-    def feed(
-        self,
-        iterator: Iterable[str],
-        process: Callable[[str], List[str]],
-    ) -> None:
-        word_counts: Dict[str, int] = defaultdict(int)
+            prev_log_likelihood = log_likelihood
+            
+            # Prune low-probability segments
+            self.prune_segments()
+            
+            print(f"Iteration {iteration + 1}, Log-likelihood: {log_likelihood:.2f}")
+    
+    def prune_segments(self):
+        """Remove segments with low counts"""
+        segments_to_keep = [seg for seg, count in self.segment_counts.items() 
+                           if count >= self.min_segment_count]
         
-        for sequence in iterator:
-            for word in process(sequence):
-                word_counts[word] += 1
+        # Update segment probabilities
+        total = sum(self.segment_probs[seg] for seg in segments_to_keep)
+        for seg in list(self.segment_probs.keys()):
+            if seg in segments_to_keep:
+                self.segment_probs[seg] /= total
+            else:
+                del self.segment_probs[seg]
         
-        self.words = word_counts
+        # Update transition probabilities
+        for (s1, s2) in list(self.transition_probs.keys()):
+            if s1 not in segments_to_keep or s2 not in segments_to_keep:
+                del self.transition_probs[(s1, s2)]
+
+    def compute_log_likelihood(self, data: HyphenatedData) -> float:
+        """Compute the log-likelihood of the data under current parameters"""
+        total_log_prob = 0.0
+        
+        for word, segmentations in data.items():
+            word_log_prob = 0.0
+            for seg in segmentations:
+                seg_prob = 1.0
+                if seg:
+                    seg_prob *= self.segment_probs.get(seg[0], 1e-10)
+                
+                for i in range(len(seg) - 1):
+                    seg_prob *= self.transition_probs.get((seg[i], seg[i+1]), 1e-10)
+                
+                word_log_prob += seg_prob
+            
+            if word_log_prob > 0:
+                total_log_prob += math.log(word_log_prob)
+        
+        return total_log_prob
+
+    def segment_word(self, word: str) -> Segmentation:
+        """Segment a new word using Viterbi algorithm"""
+        # Implement Viterbi algorithm to find most likely segmentation
+        # This is a simplified version - a full implementation would be more complex
+        
+        # For now, just return the segments that exist in our vocabulary
+        segments = []
+        i = 0
+        n = len(word)
+        
+        while i < n:
+            found = False
+            # Try to find the longest possible segment starting at i
+            for j in range(min(i + 10, n), i, -1):  # Look for segments up to 10 chars
+                segment = word[i:j]
+                if segment in self.segment_probs:
+                    segments.append(segment)
+                    i = j
+                    found = True
+                    break
+            
+            if not found:
+                # No known segment - add single character
+                segments.append(word[i])
+                i += 1
+        
+        return segments
 
 
-# Simplified BPE model class for the translation
-class BPE:
-    def __init__(self):
-        self.vocab: Dict[str, int] = {}
-        self.vocab_r: Dict[int, str] = {}
-        self.merges: Dict[Pair, Tuple[int, int]] = {}
-        self.continuing_subword_prefix: Optional[str] = None
-        self.end_of_word_suffix: Optional[str] = None
-
-    def get_vocab(self) -> Dict[str, int]:
-        return self.vocab
+def load_data_from_pairs(word_pairs: List[Tuple[str, str]]) -> HyphenatedData:
+    """Convert word-hyphenation pairs into training data format"""
+    data = defaultdict(list)
+    
+    for word, hyphenated in word_pairs:
+        segments = hyphenated.split('-')
+        data[word].append(segments)
+    
+    return data
 
 
-# Test cases would be implemented similarly to the Rust version
+# Test data
+test_data = [
+    ("ультравысокочастотными", "уль-тра-вы-соко-ча-сто-тны-ми"),
+    ("ультравысокочастотному", "уль-тра-вы-соко-ча-сто-тно-му"),
+    ("ультравысокочастотного", "уль-тра-вы-соко-ча-сто-тно-го"),
+    ("товарораспорядительными", "то-варо-ра-спо-ря-ди-тель-ны-ми"),
+    ("товарораспорядительному", "то-варо-ра-спо-ря-ди-тель-но-му"),
+    ("товарораспорядительного", "то-варо-ра-спо-ря-ди-тель-но-го"),
+    ("самосовершенствовавшийся", "са-мо-со-вер-шен-ство-вав-ший-ся"),
+    ("самопрограммировавшийся", "само-прог-рам-ми-ро-вав-ший-ся"),
+]
+
+
 if __name__ == "__main__":
-    # Example usage
-    word_counts = {
-        "roses": 1,
-        "are": 2,
-        "red": 1,
-        "voilets": 1,
-        "blue": 1,
-        "BERT": 1,
-        "is": 2,
-        "big": 1,
-        "and": 1,
-        "so": 1,
-        "GPT-2": 1,
-    }
+    # Prepare data
+    data = load_data_from_pairs(test_data)
     
-    trainer = BpeTrainer(
-        min_frequency=2,
-        vocab_size=30000,
-        show_progress=False
+    # Train model
+    trainer = EMSegmentationTrainer(
+        max_iterations=20,
+        convergence_threshold=1e-4,
+        min_segment_count=1,
+        smoothing_alpha=0.1
     )
-    model = BPE()
-    trainer.do_train(word_counts, model)
+    trainer.train(data)
     
-    print("Vocabulary:", model.vocab)
-    print("Merges:", model.merges)
+    # Show learned segments
+    print("\nLearned segments and probabilities:")
+    for seg, prob in sorted(trainer.segment_probs.items(), key=lambda x: -x[1]):
+        if len(seg) > 1:  # Only show multi-character segments
+            print(f"{seg}: {prob:.4f}")
+    
+    # Test segmentation on new words
+    test_words = [
+        "ультравысокочастотными",
+        "товарораспорядительными",
+        "самопрограммировавшийся",
+        "новоеслово"
+    ]
+    
+    print("\nTest segmentations:")
+    for word in test_words:
+        segmentation = trainer.segment_word(word)
+        print(f"{word}: {'-'.join(segmentation)}")
