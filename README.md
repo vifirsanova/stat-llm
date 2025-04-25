@@ -1,17 +1,36 @@
 # Statistical approach to data segmentation for LLMs
 
+This repository presents a novel tokenizer for training machine learning models for natural languages processing
+
+Our tokenizer is an alternative approach to byte-pair-encoding aiming to mitigate hallucinations in large language models and enhance machine learning reasoning 
+
+The tokenizer uses syllable segmentation to tokenize the data and convert the tokenized dataset to a tensor compatible with PyTorch
+
+The tool is trained based on Bayesian approaches and uses Expectation-Maximization (EM) algorithm
+
+**Our algorithm**
+
+1. Collect the data from wiktionary
+2. Apply rule-based syllable segmentation 
+3. Train EM on the annotated data
+4. Collect the dictionary (see `model.json`) for machine learning
+
+**Model compatibility**
+
+Use `vectorize.sh` to vectorize your data with our algorithm to prevent any incompatibilities
+
 ### Training pipeline
 
 For model training use the following script:
 
 ```bash
-python segmentation.py \
-  --input words.csv \
+python3 train.py \
+  --input ~/stat-llm/data/train_data.csv \
   --output_model model.json \
   --output_test test_results.json \
   --test_words "ультравысокочастотными" "новоеслово" \
-  --max_iterations 50 \
-  --min_segment_count 1
+  --max_iterations 10 \
+  --min_segment_count 10
 ```
 
 Output format:
@@ -57,3 +76,44 @@ Output test results:
   ...
 ]
 ```
+
+### Model testing
+
+For model testing use the following script:
+
+```bash
+python3 test.py \
+  --model ~/stat-llm/train/model.json \
+  --test_data ~/stat-llm/data/test_data.csv \
+  --output test_results.json
+```
+
+Example outputs:
+
+```bash
+Evaluating model...
+
+Evaluation Report:
+Metric         Score     
+-------------------------
+Precision      0.5740
+Recall         0.5832
+F1-Score       0.5786
+Accuracy       0.1967
+
+Confusion Matrix:
+True Positives: 167320
+False Positives: 124166
+False Negatives: 119591
+
+Correct Words: 15418/78388 (19.67%)
+Saving detailed results to test_results.json...
+Done!
+```
+
+-----
+
+*TODO:*
+
+- apply NKFD normalization in training data
+- clean training data
