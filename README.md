@@ -55,7 +55,13 @@ Vector dimensionality equals vocabulary size (the number of unique segments from
 }
 ```
 
-In Python, use can use our tool as a module (see `vectorizer.py`). The module is fully compatible with PyTorch workflows, including HuggingFace integrations
+In Python, you can use our tool as a module (see `vectorizer.py`). The module is fully compatible with PyTorch workflows, including HuggingFace integrations
+
+You can use this module as a standalone tool, e.g.:
+
+```python
+python3 vectorizer.py --model ~/stat-llm/train/model.json --text "ультравысокочастотными"
+```
 
 ### Training pipeline
 
