@@ -1,4 +1,4 @@
-import math
+import math, argparse, csv, json, os
 from collections import defaultdict
 from typing import Dict, List, Tuple, Set, Optional
 import random
@@ -196,59 +196,100 @@ class EMSegmentationTrainer:
         
         return segments
 
+    def save_model(self, output_path: str):
+        """Save the trained model to a JSON file"""
+        model_data = {
+            "segment_probs": dict(self.segment_probs),
+            "transition_probs": {
+                f"{s1},{s2}": prob for (s1, s2), prob in self.transition_probs.items()
+            },
+            "parameters": {
+                "max_iterations": self.max_iterations,
+                "convergence_threshold": self.convergence_threshold,
+                "min_segment_count": self.min_segment_count,
+                "smoothing_alpha": self.smoothing_alpha
+            }
+        }
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(model_data, f, ensure_ascii=False, indent=2)
 
-def load_data_from_pairs(word_pairs: List[Tuple[str, str]]) -> HyphenatedData:
-    """Convert word-hyphenation pairs into training data format"""
+def load_data_from_csv(csv_path: str) -> HyphenatedData:
+    """Load word-hyphenation pairs from CSV file"""
     data = defaultdict(list)
     
-    for word, hyphenated in word_pairs:
-        segments = hyphenated.split('-')
-        data[word].append(segments)
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            word = row['words'].strip()
+            hyphenated = row['hyphenated_words'].strip()
+            segments = hyphenated.split('-')
+            data[word].append(segments)
     
     return data
 
+def test_segmentation(trainer: EMSegmentationTrainer, test_words: List[str], output_path: str):
+    """Test segmentation on given words and save results"""
+    results = []
+    
+    for word in test_words:
+        segmentation = trainer.segment_word(word)
+        results.append({
+            "word": word,
+            "segmentation": segmentation,
+            "hyphenated": '-'.join(segmentation)
+        })
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
 
-# Test data
-test_data = [
-    ("ультравысокочастотными", "уль-тра-вы-соко-ча-сто-тны-ми"),
-    ("ультравысокочастотному", "уль-тра-вы-соко-ча-сто-тно-му"),
-    ("ультравысокочастотного", "уль-тра-вы-соко-ча-сто-тно-го"),
-    ("товарораспорядительными", "то-варо-ра-спо-ря-ди-тель-ны-ми"),
-    ("товарораспорядительному", "то-варо-ра-спо-ря-ди-тель-но-му"),
-    ("товарораспорядительного", "то-варо-ра-спо-ря-ди-тель-но-го"),
-    ("самосовершенствовавшийся", "са-мо-со-вер-шен-ство-вав-ший-ся"),
-    ("самопрограммировавшийся", "само-прог-рам-ми-ро-вав-ший-ся"),
-]
+def main():
+    parser = argparse.ArgumentParser(description="Train EM Segmentation Model")
+    parser.add_argument('--input', type=str, required=True, 
+                       help='Path to input CSV file with word,hyphenated_words columns')
+    parser.add_argument('--output_model', type=str, required=True,
+                       help='Path to save trained model (JSON format)')
+    parser.add_argument('--output_test', type=str,
+                       help='Path to save test results (JSON format)')
+    parser.add_argument('--test_words', type=str, nargs='+',
+                       help='Words to test segmentation on')
+    parser.add_argument('--max_iterations', type=int, default=100,
+                       help='Maximum number of EM iterations')
+    parser.add_argument('--min_segment_count', type=int, default=2,
+                       help='Minimum count to keep a segment')
+    parser.add_argument('--smoothing_alpha', type=float, default=0.1,
+                       help='Additive smoothing parameter')
+    parser.add_argument('--convergence_threshold', type=float, default=1e-5,
+                       help='Log-likelihood change threshold for convergence')
+    
+    args = parser.parse_args()
 
-
-if __name__ == "__main__":
-    # Prepare data
-    data = load_data_from_pairs(test_data)
+    # Load data
+    print(f"Loading data from {args.input}...")
+    data = load_data_from_csv(args.input)
     
     # Train model
+    print("Training model...")
     trainer = EMSegmentationTrainer(
-        max_iterations=20,
-        convergence_threshold=1e-4,
-        min_segment_count=1,
-        smoothing_alpha=0.1
+        max_iterations=args.max_iterations,
+        convergence_threshold=args.convergence_threshold,
+        min_segment_count=args.min_segment_count,
+        smoothing_alpha=args.smoothing_alpha
     )
     trainer.train(data)
     
-    # Show learned segments
-    print("\nLearned segments and probabilities:")
-    for seg, prob in sorted(trainer.segment_probs.items(), key=lambda x: -x[1]):
-        if len(seg) > 1:  # Only show multi-character segments
-            print(f"{seg}: {prob:.4f}")
+    # Save model
+    print(f"Saving model to {args.output_model}...")
+    trainer.save_model(args.output_model)
     
-    # Test segmentation on new words
-    test_words = [
-        "ультравысокочастотными",
-        "товарораспорядительными",
-        "самопрограммировавшийся",
-        "новоеслово"
-    ]
+    # Test segmentation if requested
+    if args.test_words and args.output_test:
+        print(f"Testing segmentation on {len(args.test_words)} words...")
+        test_segmentation(trainer, args.test_words, args.output_test)
+        print(f"Test results saved to {args.output_test}")
     
-    print("\nTest segmentations:")
-    for word in test_words:
-        segmentation = trainer.segment_word(word)
-        print(f"{word}: {'-'.join(segmentation)}")
+    print("Done!")
+
+
+if __name__ == "__main__":
+    main()
