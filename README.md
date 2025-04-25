@@ -15,9 +15,11 @@ The tool is trained based on Bayesian approaches and uses Expectation-Maximizati
 3. Train EM on the annotated data
 4. Collect the dictionary (see `model.json`) for machine learning
 
-**Model compatibility**
+**Model usage and compatibility**
 
 Use `vectorize.sh` to vectorize your data with our algorithm to prevent any incompatibilities
+
+
 
 ### Training pipeline
 
