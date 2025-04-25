@@ -86,6 +86,8 @@ model = SegmentClassifier(vectorizer.vocab_size)
 output = model(tensor_batch)
 ```
 
+Also, we provide a dummy LLM usage example, check out `dummy_demo.py`
+
 ### Training pipeline
 
 For model training use the following script:
