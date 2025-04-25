@@ -63,6 +63,29 @@ You can use this module as a standalone tool, e.g.:
 python3 vectorizer.py --model ~/stat-llm/train/model.json --text "ультравысокочастотными"
 ```
 
+This tool can be used for GPU-based computing as well. See `torch_demo.py` for example usage in PyTorch integration:
+
+```python
+from vectorizer import TextVectorizer
+
+vectorizer = TextVectorizer("train/model.json")
+batch = ["синхрофазотрон", "гипотенуза", "алфавит"]
+tensor_batch = vectorizer.batch_vectorize(batch, 'tensor')
+
+# Sample class in PyTorch
+# Could be your Torch.nn.layers, HF Transformers, etc.
+class SegmentClassifier(torch.nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+        self.fc = torch.nn.Linear(vocab_size, 1)
+    
+    def forward(self, x):
+        return torch.sigmoid(self.fc(x))
+
+model = SegmentClassifier(vectorizer.vocab_size)
+output = model(tensor_batch)
+```
+
 ### Training pipeline
 
 For model training use the following script:
