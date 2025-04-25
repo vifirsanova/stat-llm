@@ -1,19 +1,20 @@
 #!/bin/bash
 
-# Usage: ./vectorize.sh model.json "text to vectorize" [output_format]
+# Usage: ./vectorize.sh model.json "text to vectorize" output_file [output_format]
 # output_format can be "list" (default) or "json"
 
-if [ $# -lt 2 ]; then
-    echo "Usage: $0 model.json \"text to vectorize\" [output_format]"
+if [ $# -lt 3 ]; then
+    echo "Usage: $0 model.json \"text to vectorize\" output_file [output_format]"
     exit 1
 fi
 
 MODEL_FILE=$1
 TEXT=$2
-FORMAT=${3:-"list"}
+OUTPUT_FILE=$3
+FORMAT=${4:-"list"}
 
-# Python one-liner to process the text
-python3 - <<EOF
+# Python script that processes the text and saves to file
+python3 - <<EOF > "$OUTPUT_FILE"
 import json
 import sys
 from collections import defaultdict
@@ -59,14 +60,20 @@ segments = segment_text('$TEXT', model)
 vector = text_to_vector('$TEXT', model, vocab)
 
 if '$FORMAT' == 'json':
-    import json
-    print(json.dumps({
+    output = {
         "text": "$TEXT",
         "segments": segments,
         "vector": vector,
         "vocab_size": len(vocab)
-    }))
+    }
+    json.dump(output, sys.stdout, ensure_ascii=False, indent=2)
 else:
-    print("Segments:", " ".join(segments))
-    print("Vector:", vector)
+    # For list format, create a more compact output
+    output = {
+        "segments": " ".join(segments),
+        "vector": vector
+    }
+    json.dump(output, sys.stdout, ensure_ascii=False)
 EOF
+
+echo "Results saved to $OUTPUT_FILE"

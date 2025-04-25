@@ -19,7 +19,41 @@ The tool is trained based on Bayesian approaches and uses Expectation-Maximizati
 
 Use `vectorize.sh` to vectorize your data with our algorithm to prevent any incompatibilities
 
+The command line script returns JSON object with original text, segments, and vectors
 
+Vector dimensionality equals vocabulary size (the number of unique segments from our EM-model). The vectors are built in one-hot-encoding manner and can be easily converted to any tensor format (PyTorch, TF, etc.), as well as converted from parse to dense type
+
+*Example usage*
+
+```bash
+./vectorize.sh ~/stat-llm/train/model.json "ультравысокочастотными" sample_outputs/sample_output.json json
+```
+
+*Sample output*
+
+```json
+{
+  "text": "ультравысокочастотными",
+  "segments": [
+    "уль",
+    "трав",
+    "ы",
+    "соко",
+    "част",
+    "о",
+    "тным",
+    "и"
+  ],
+  "vector": [
+    1,
+    0,
+    ...
+  ],
+  "vocab_size": [
+    6413
+  ]
+}
+```
 
 ### Training pipeline
 
